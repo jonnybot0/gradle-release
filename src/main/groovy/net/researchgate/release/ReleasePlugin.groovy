@@ -27,16 +27,20 @@ import net.researchgate.release.tasks.UpdateVersion
 import org.gradle.api.GradleException
 import org.gradle.api.Plugin
 import org.gradle.api.Project
-import org.gradle.api.Task
 import org.gradle.api.plugins.BasePlugin
 import org.gradle.api.tasks.GradleBuild
-import org.gradle.api.tasks.TaskState
+import org.gradle.build.event.BuildEventsListenerRegistry
 
-class ReleasePlugin extends PluginHelper implements Plugin<Project> {
+import javax.inject.Inject
+
+abstract class ReleasePlugin extends PluginHelper implements Plugin<Project> {
 
     static final String RELEASE_GROUP = 'Release'
 
     private BaseScmAdapter scmAdapter
+
+    @Inject
+    abstract BuildEventsListenerRegistry getBuildEventsListenerRegistry()
 
     void apply(Project project) {
         if (!project.plugins.hasPlugin(BasePlugin.class)) {
@@ -157,19 +161,16 @@ class ReleasePlugin extends PluginHelper implements Plugin<Project> {
             }
         }
 
-        project.gradle.taskGraph.afterTask { Task task, TaskState state ->
-            if (state.failure && task.name == "release") {
-                try {
-                    createScmAdapter()
-                } catch (Exception ignored) {}
-                if (scmAdapter && extension.revertOnFail && project.file(extension.versionPropertyFile)?.exists()) {
-                    log.error('Release process failed, reverting back any changes made by Release Plugin.')
-                    scmAdapter.revert()
-                } else {
-                    log.error('Release process failed, please remember to revert any uncommitted changes made by the Release Plugin.')
+        def cleanupServiceProvider = project.gradle.sharedServices
+                .registerIfAbsent('cleanupBuildService', CleanupBuildService) {
+                    it.parameters.extension.set(extension)
+                    it.parameters.project.set(project)
+                    it.parameters.scmAdapter.set(project.provider {
+                        createScmAdapter()
+                        return scmAdapter
+                    })
                 }
-            }
-        }
+        buildEventsListenerRegistry.onTaskCompletion(cleanupServiceProvider)
     }
 
     void createScmAdapter() {
